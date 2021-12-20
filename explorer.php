@@ -16,8 +16,8 @@ $allow_create_folder = true; // Set to false to disable folder creation
 $allow_direct_link = true; // Set to false to only allow downloads and not direct link
 $allow_show_folders = true; // Set to false to hide all subdirectories
 
-$disallowed_patterns = ['*.php'];  // must be an array.  Matching files not allowed to be uploaded
-$hidden_patterns = ['*.php','.*']; // Matching files hidden in directory index
+$disallowed_extensions = ['php'];  // must be an array. Extensions disallowed to be uploaded
+$hidden_extensions = ['php']; // must be an array of lowercase file extensions. Extensions hidden in directory index
 
 $PASSWORD = '';  // Set the password, to access the file manager... (optional)
 
@@ -31,7 +31,7 @@ if($PASSWORD) {
 			$_SESSION['_sfm_allowed'] = true;
 			header('Location: ?');
 		}
-		echo '<html><body><form action=? method=post>PASSWORD:<input type=password name=p autofocus/></form></body></html>';
+		echo '<html><body><form action=? method=post>PASSWORD:<input type=password name=p /></form></body></html>';
 		exit;
 	}
 }
@@ -49,9 +49,6 @@ if(substr($tmp, 0,strlen($tmp_dir)) !== $tmp_dir)
 	err(403,"Forbidden");
 if(strpos($_REQUEST['file'], DIRECTORY_SEPARATOR) === 0)
 	err(403,"Forbidden");
-if(preg_match('@^.+://@',$_REQUEST['file'])) {
-	err(403,"Forbidden");
-}
 
 
 if(!$_COOKIE['_sfm_xsrf'])
@@ -62,33 +59,27 @@ if($_POST) {
 }
 
 $file = $_REQUEST['file'] ?: '.';
-
 if($_GET['do'] == 'list') {
 	if (is_dir($file)) {
 		$directory = $file;
 		$result = [];
 		$files = array_diff(scandir($directory), ['.','..']);
-		foreach ($files as $entry) if (!is_entry_ignored($entry, $allow_show_folders, $hidden_patterns)) {
-			$i = $directory . '/' . $entry;
-			$stat = stat($i);
-			$result[] = [
-				'mtime' => $stat['mtime'],
-				'size' => $stat['size'],
-				'name' => basename($i),
-				'path' => preg_replace('@^\./@', '', $i),
-				'is_dir' => is_dir($i),
-				'is_deleteable' => $allow_delete && ((!is_dir($i) && is_writable($directory)) ||
-														(is_dir($i) && is_writable($directory) && is_recursively_deleteable($i))),
-				'is_readable' => is_readable($i),
-				'is_writable' => is_writable($i),
-				'is_executable' => is_executable($i),
-			];
-		}
-		usort($result,function($f1,$f2){
-			$f1_key = ($f1['is_dir']?:2) . $f1['name'];
-			$f2_key = ($f2['is_dir']?:2) . $f2['name'];
-			return $f1_key > $f2_key;
-		});
+		foreach ($files as $entry) if (!is_entry_ignored($entry, $allow_show_folders, $hidden_extensions)) {
+		$i = $directory . '/' . $entry;
+		$stat = stat($i);
+	        $result[] = [
+	        	'mtime' => $stat['mtime'],
+	        	'size' => $stat['size'],
+	        	'name' => basename($i),
+	        	'path' => preg_replace('@^\./@', '', $i),
+	        	'is_dir' => is_dir($i),
+	        	'is_deleteable' => $allow_delete && ((!is_dir($i) && is_writable($directory)) ||
+                                                           (is_dir($i) && is_writable($directory) && is_recursively_deleteable($i))),
+	        	'is_readable' => is_readable($i),
+	        	'is_writable' => is_writable($i),
+	        	'is_executable' => is_executable($i),
+	        ];
+	    }
 	} else {
 		err(412,"Not a Directory");
 	}
@@ -109,17 +100,30 @@ if($_GET['do'] == 'list') {
 	@mkdir($_POST['name']);
 	exit;
 } elseif ($_POST['do'] == 'upload' && $allow_upload) {
-	foreach($disallowed_patterns as $pattern)
-		if(fnmatch($pattern, $_FILES['file_data']['name']))
+	foreach($disallowed_extensions as $ext)
+		if(preg_match(sprintf('/\.%s$/',preg_quote($ext)), $_FILES['file_data']['name']))
 			err(403,"Files of this type are not allowed.");
 
 	$res = move_uploaded_file($_FILES['file_data']['tmp_name'], $file.'/'.$_FILES['file_data']['name']);
 	exit;
 } elseif ($_GET['do'] == 'download') {
-	foreach($disallowed_patterns as $pattern)
-		if(fnmatch($pattern, $file))
-			err(403,"Files of this type are not allowed.");
-
+   if (is_dir($file)) {
+	$dirname = basename($file);
+	$tgz=$dirname.'.tar';
+	//$finfo = finfo_open(FILEINFO_MIME_TYPE);
+	//header('Content-Type: ' . finfo_file($finfo, $tgz));
+	header('Content-Type: application/x-tar');
+	//header('Content-Length: 1000000');
+	header(sprintf('Content-Disposition: attachment; filename=%s',
+		"\"$tgz\"" ));
+		//strpos('MSIE',$_SERVER['HTTP_REFERER']) ? rawurlencode($filename) : "\"$tgz\"" ));
+	ob_flush();
+	//readfile($file);
+	//passthru('/bin/tar -I pigz -c - "'.$dirname.'"');
+	passthru('/bin/tar -c - "'.$file.'"');
+	exit;
+   	}
+   else {
 	$filename = basename($file);
 	$finfo = finfo_open(FILEINFO_MIME_TYPE);
 	header('Content-Type: ' . finfo_file($finfo, $file));
@@ -129,9 +133,10 @@ if($_GET['do'] == 'list') {
 	ob_flush();
 	readfile($file);
 	exit;
+	}
 }
 
-function is_entry_ignored($entry, $allow_show_folders, $hidden_patterns) {
+function is_entry_ignored($entry, $allow_show_folders, $hidden_extensions) {
 	if ($entry === basename(__FILE__)) {
 		return true;
 	}
@@ -139,11 +144,12 @@ function is_entry_ignored($entry, $allow_show_folders, $hidden_patterns) {
 	if (is_dir($entry) && !$allow_show_folders) {
 		return true;
 	}
-	foreach($hidden_patterns as $pattern) {
-		if(fnmatch($pattern,$entry)) {
-			return true;
-		}
+
+	$ext = strtolower(pathinfo($entry, PATHINFO_EXTENSION));
+	if (in_array($ext, $hidden_extensions)) {
+		return true;
 	}
+
 	return false;
 }
 
@@ -188,7 +194,6 @@ function get_absolute_path($path) {
 
 function err($code,$msg) {
 	http_response_code($code);
-	header("Content-Type: application/json");
 	echo json_encode(['error' => ['code'=>intval($code), 'msg' => $msg]]);
 	exit;
 }
@@ -202,6 +207,8 @@ $MAX_UPLOAD_SIZE = min(asBytes(ini_get('post_max_size')), asBytes(ini_get('uploa
 ?>
 <!DOCTYPE html>
 <html><head>
+<title>Xplorer</title>
+<link id="favicon" rel="shortcut icon" type="image/png" href="data:image/png;base64,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">
 <meta http-equiv="content-type" content="text/html; charset=utf-8">
 
 <style>
@@ -237,7 +244,6 @@ td.first {font-size:14px;white-space: normal;}
 td.empty { color:#777; font-style: italic; text-align: center;padding:3em 0;}
 .is_dir .size {color:transparent;font-size:0;}
 .is_dir .size:before {content: "--"; font-size:14px;color:#333;}
-.is_dir .download{visibility: hidden}
 a.delete {display:inline-block;
 	background: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAABGdBTUEAAK/INwWK6QAAABl0RVh0U29mdHdhcmUAQWRvYmUgSW1hZ2VSZWFkeXHJZTwAAADtSURBVHjajFC7DkFREJy9iXg0t+EHRKJDJSqRuIVaJT7AF+jR+xuNRiJyS8WlRaHWeOU+kBy7eyKhs8lkJrOzZ3OWzMAD15gxYhB+yzAm0ndez+eYMYLngdkIf2vpSYbCfsNkOx07n8kgWa1UpptNII5VR/M56Nyt6Qq33bbhQsHy6aR0WSyEyEmiCG6vR2ffB65X4HCwYC2e9CTjJGGok4/7Hcjl+ImLBWv1uCRDu3peV5eGQ2C5/P1zq4X9dGpXP+LYhmYz4HbDMQgUosWTnmQoKKf0htVKBZvtFsx6S9bm48ktaV3EXwd/CzAAVjt+gHT5me0AAAAASUVORK5CYII=) no-repeat scroll 0 2px;
 	color:#d00;	margin-left: 15px;font-size:11px;padding:0 0 0 13px;
@@ -307,9 +313,11 @@ $(function(){
 	$('#table').tablesorter();
 
 	$('#table').on('click','.delete',function(data) {
+	     if(confirm('Are you sure?')){
 		$.post("",{'do':'delete',file:$(this).attr('data-file'),xsrf:XSRF},function(response){
 			list();
 		},'json');
+	     }		
 		return false;
 	});
 
@@ -409,10 +417,11 @@ $(function(){
 	}
 	function renderFileRow(data) {
 		var $link = $('<a class="name" />')
-			.attr('href', data.is_dir ? '#' + encodeURIComponent(data.path) : './' + data.path)
+			.attr('href', data.is_dir ? '#' + encodeURIComponent(data.path) : './'+ encodeURIComponent(data.path))
 			.text(data.name);
 		var allow_direct_link = <?php echo $allow_direct_link?'true':'false'; ?>;
-        	if (!data.is_dir && !allow_direct_link)  $link.css('pointer-events','none');
+        	//if (!data.is_dir && !allow_direct_link)  $link.css('pointer-events','none');
+        	if (!allow_direct_link)  $link.css('pointer-events','none');
 		var $dl_link = $('<a/>').attr('href','?do=download&file='+ encodeURIComponent(data.path))
 			.addClass('download').text('download');
 		var $delete_link = $('<a href="#" />').attr('data-file',data.path).addClass('delete').text('delete');
@@ -433,12 +442,12 @@ $(function(){
 	function renderBreadcrumbs(path) {
 		var base = "",
 			$html = $('<div/>').append( $('<a href=#>Home</a></div>') );
-		$.each(path.split('%2F'),function(k,v){
+		$.each(path.split('/'),function(k,v){
 			if(v) {
 				var v_as_text = decodeURIComponent(v);
 				$html.append( $('<span/>').text(' ▸ ') )
 					.append( $('<a/>').attr('href','#'+base+v).text(v_as_text) );
-				base += v + '%2F';
+				base += v + '/';
 			}
 		});
 		return $html;
